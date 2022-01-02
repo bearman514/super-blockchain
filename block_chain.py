@@ -1,9 +1,10 @@
 import time
 import hashlib
+import rsa
 
 from transaction import Block, Transaction
 
-ENCODE = "utf-8"
+ENCODE_FORMAT = "utf-8"
 
 class BlockChain():
     
@@ -15,18 +16,62 @@ class BlockChain():
         self.block_limitation = 32
         self.chain = []
         self.pending_transactions = []
-    
+
+    def generate_address(self):
+        public, private = rsa.newkeys(512)
+        public_key = public.save_pkcs1()
+        private_key = private.save_pkcs1()
+        return self.get_address_from_public(public_key), private_key
+
+    def get_address_from_public(self, public_key):
+        address = str(public_key).replace('\\n', '')
+        address = address.replace("b'-----BEGIN RSA PUBLIC KEY-----", "")
+        address = address.replace("-----END RSA PUBLIC KEY-----'", "")
+        address = address.replace(' ', '')
+        print('Address: ', address)
+        return address
+
     def create_genesis_block(self):
-        print("Create genesis block...")
-        new_block = Block(
-            'Hello First Block!',
-            self.difficulty,
-            'shark',
-            self.miner_rewards
-        )
+
+        print("===== Create genesis block...")
+
+        new_block = Block.from_dict({
+            'previous_hash': 'Hello First Block!',
+            'difficulty': self.difficulty,
+            'miner': 'super-smurf',
+            'miner_rewards': self.miner_rewards
+        })
         new_block.hash = self.get_hash(new_block, 0)
         self.chain.append(new_block)
     
+    def initialize_transaction(self, transaction_dict: dict):
+        """transaction_dict : {
+            'sender': sender,
+            'receiver': receiver,
+            'amounts': amounts,
+            'fee': fee,
+            'message': message
+        }
+        """
+        sender = transaction_dict.get('sender')
+        amounts = transaction_dict.get('amounts')
+        fee = transaction_dict.get('fee')
+        if self.get_balance(sender) < amounts + fee:
+            print("Balance not enough!")
+            return False
+        #
+        new_transaction = Transaction.from_dict(transaction_dict)
+        return new_transaction
+    
+    def sign_transaction(self, transaction, private_key):
+        private_key_pkcs = rsa.PrivateKey.load_pkcs1(private_key)
+        transaction_str = transaction.to_string()
+        signature = rsa.sign(transaction_str.encode(ENCODE_FORMAT), private_key_pkcs, 'SHA-1')
+        return signature
+    
+
+
+
     def add_transaction_to_block(self, block):
         # Get transaction with highest fee by block_limitation
         self.pending_transactions.sort(key=lambda x: x.fee, reverse=True)
@@ -38,6 +83,26 @@ class BlockChain():
             transaction_accepted = self.pending_transactions
             self.pending_transactions = []
             block.transactions = transaction_accepted
+    
+    def add_transaction(self, transaction, signature):
+        public_key = '-----BEGIN RSA PUBLIC KEY-----\n'
+        public_key += transaction.sender
+        public_key += '\n-----END RSA PUBLIC KEY-----'
+        public_key_pkcs = rsa.PublicKey.load_pkcs1(public_key.encode(ENCODE_FORMAT))
+
+        transaction_str = transaction.to_string()
+        if transaction.fee + transaction.amounts > self.get_balance(transaction.sender):
+            print("Balance not enough!")
+            return False
+        
+        try:
+            #
+            rsa.verify(transaction_str.encode(ENCODE_FORMAT), signature, public_key_pkcs)
+            print("Authorized successfully!")
+            self.pending_transactions.append(transaction)
+            return True
+        except Exception:
+            print("RSA Verified wrong!")
     
     def mine_block(self, miner):
         start = time.process_time()
@@ -62,22 +127,11 @@ class BlockChain():
         print(f"Hash found: {new_block.hash} @ difficulty {self.difficulty}, Time cost: {time_consumed}s")
         self.chain.append(new_block)
 
-    def transaction_to_string(self, transaction):
-        transaction_dict = {
-            'sender': str(transaction.sender),
-            'receiver': str(transaction.receiver),
-            'amounts': transaction.amounts,
-            'fee': transaction.fee,
-            'message': transaction.message
-        }
-        return str(transaction_dict)
+
     
-    def get_transactions_string(self, block):
-        transaction_str = ""
-        for transaction in block.transactions:
-            transaction_str += self.transaction_to_string(transaction)
-        return transaction_str
+
     
+
     def get_hash(self, block, nonce):
         s = hashlib.sha1()
         s.update(
@@ -86,12 +140,18 @@ class BlockChain():
                 + str(block.timestamp)
                 + self.get_transactions_string(block)
                 + str(nonce)
-            ).encode(ENCODE)
+            ).encode(ENCODE_FORMAT)
         )
         h = s.hexdigest()
         return h
-    
-    def get_balance(self, account):
+
+    def get_transactions_string(self, block):
+        transaction_str = ""
+        for transaction in block.transactions:
+            transaction_str += transaction.to_string()
+        return transaction_str
+
+    def get_balance(self, account: str):
         balance = 0
         for block in self.chain:
             # Check miner reward
@@ -99,7 +159,8 @@ class BlockChain():
             if block.miner == account:
                 miner = True
                 balance += block.miner_rewards
-            for transaction in block.transations:
+
+            for transaction in block.transactions:
                 if miner:
                     balance += transaction.fee
                 if transaction.sender == account:
@@ -107,6 +168,13 @@ class BlockChain():
                     balance -= transaction.fee
                 elif transaction.receiver == account:
                     balance += transaction.amounts
+        return balance
+
+
+
+
+
+
 
     def adjust_difficulty(self):
         if len(self.chain) % self.adjust_difficulty_blocks != 1:
@@ -114,7 +182,7 @@ class BlockChain():
         elif len(self.chain) <= self.adjust_difficulty_blocks:
             return self.difficulty
         else:
-            start = self.chain[-1 * self.add_transaction_to_block - 1].timestamp
+            start = self.chain[-1 * self.adjust_difficulty_blocks - 1].timestamp
             finish = self.chain[-1].timestamp
             average_time_consumed = round((finish-start) / (self.adjust_difficulty_blocks), 2)
 
@@ -137,33 +205,57 @@ class BlockChain():
             previous_hash = block.hash
         print("Hash correct!")
         return True
+    
+    def start(self):
+        address, private = self.generate_address()
+        self.create_genesis_block()
+        while True:
+            # Step1: initialize a transaction
+            transaction = self.initialize_transaction({
+                'sender': address,
+                'receiver': 'super-smurf',
+                'amounts': 1,
+                'fee': 1,
+                'message': 'Test'
+            })
+           
+            print(transaction)
+            if transaction:
+                # Step2: Sign ur transaction
+                signature = self.sign_transaction(transaction, private)
+                # Step3: Send it to blockchain
+                self.add_transaction(transaction, signature)
+            self.mine_block(address)
+            self.get_balance(address)
+            self.adjust_difficulty()
 
 
 if __name__ == "__main__":
 
     block = BlockChain()
-    block.create_genesis_block()
+    block.start()
 
-    print(block.chain[0])
+    # block.create_genesis_block()
+
+    # print(block.chain[0])
+
+    # block.mine_block('shark')
+
+    # block.verify_blockchain()
 
 
+    # print('Insert fake transaction.')
+    # fake_transaction = Transaction(
+    #     'test123',
+    #     "address",
+    #     100,
+    #     1,
+    #     'Test'
+    # )
+    # block.chain[1].transactions.append(fake_transaction)
+    # block.mine_block('shark')
 
-    block.mine_block('shark')
-
-    block.verify_blockchain()
-
-    print('Insert fake transaction.')
-    fake_transaction = Transaction(
-        'test123',
-        "address",
-        100,
-        1,
-        'Test'
-    )
-    block.chain[1].transactions.append(fake_transaction)
-    block.mine_block('shark')
-
-    block.verify_blockchain()
+    # block.verify_blockchain()
 
 
 
