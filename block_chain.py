@@ -69,22 +69,8 @@ class BlockChain():
         signature = rsa.sign(transaction_str.encode(ENCODE_FORMAT), private_key_pkcs, 'SHA-1')
         return signature
     
-
-
-
-    def add_transaction_to_block(self, block):
-        # Get transaction with highest fee by block_limitation
-        self.pending_transactions.sort(key=lambda x: x.fee, reverse=True)
-
-        if len(self.pending_transactions) > self.block_limitation:
-            transaction_accepted = self.pending_transactions[:self.block_limitation]
-            self.pending_transactions = self.pending_transactions[self.block_limitation:]
-        else:
-            transaction_accepted = self.pending_transactions
-            self.pending_transactions = []
-            block.transactions = transaction_accepted
-    
     def add_transaction(self, transaction, signature):
+        #
         public_key = '-----BEGIN RSA PUBLIC KEY-----\n'
         public_key += transaction.sender
         public_key += '\n-----END RSA PUBLIC KEY-----'
@@ -103,14 +89,15 @@ class BlockChain():
             return True
         except Exception:
             print("RSA Verified wrong!")
-    
+
     def mine_block(self, miner):
         start = time.process_time()
+
         last_block = self.chain[-1]
         new_block = Block(
             last_block.hash,
             self.difficulty,
-            'shark',
+            miner,
             self.miner_rewards
         )
 
@@ -125,13 +112,27 @@ class BlockChain():
         
         time_consumed = round(time.process_time() - start, 5)
         print(f"Hash found: {new_block.hash} @ difficulty {self.difficulty}, Time cost: {time_consumed}s")
+
         self.chain.append(new_block)
 
+    def adjust_difficulty(self):
+        if len(self.chain) % self.adjust_difficulty_blocks != 1:
+            return self.difficulty
+        elif len(self.chain) <= self.adjust_difficulty_blocks:
+            return self.difficulty
+        else:
+            start = self.chain[-1 * self.adjust_difficulty_blocks - 1].timestamp
+            finish = self.chain[-1].timestamp
+            average_time_consumed = round((finish-start) / (self.adjust_difficulty_blocks), 2)
 
-    
+            if average_time_consumed > self.block_time:
+                print(f"Average block time: {average_time_consumed}s. Lower the difficulty...")
+                self.difficulty -= 1
+            else:
+                print(f"Average block time: {average_time_consumed}s. High up the difficulty...")
+                self.difficulty += 1
 
-    
-
+####
     def get_hash(self, block, nonce):
         s = hashlib.sha1()
         s.update(
@@ -170,29 +171,19 @@ class BlockChain():
                     balance += transaction.amounts
         return balance
 
+    def add_transaction_to_block(self, block):
+        # Get transaction with highest fee by block_limitation
+        self.pending_transactions.sort(key=lambda x: x.fee, reverse=True)
 
-
-
-
-
-
-    def adjust_difficulty(self):
-        if len(self.chain) % self.adjust_difficulty_blocks != 1:
-            return self.difficulty
-        elif len(self.chain) <= self.adjust_difficulty_blocks:
-            return self.difficulty
+        if len(self.pending_transactions) > self.block_limitation:
+            transaction_accepted = self.pending_transactions[:self.block_limitation]
+            self.pending_transactions = self.pending_transactions[self.block_limitation:]
         else:
-            start = self.chain[-1 * self.adjust_difficulty_blocks - 1].timestamp
-            finish = self.chain[-1].timestamp
-            average_time_consumed = round((finish-start) / (self.adjust_difficulty_blocks), 2)
+            transaction_accepted = self.pending_transactions
+            self.pending_transactions = []
 
-            if average_time_consumed > self.block_time:
-                print(f"Average block time: {average_time_consumed}s. Lower the difficulty...")
-                self.difficulty -= 1
-            else:
-                print(f"Average block time: {average_time_consumed}s. High up the difficulty...")
-                self.difficulty += 1
-    
+        block.transactions = transaction_accepted
+
     def verify_blockchain(self):
         previous_hash = ""
         for idx, block in enumerate(self.chain):
@@ -214,8 +205,8 @@ class BlockChain():
             transaction = self.initialize_transaction({
                 'sender': address,
                 'receiver': 'super-smurf',
-                'amounts': 1,
-                'fee': 1,
+                'amounts': 10,
+                'fee': 0,
                 'message': 'Test'
             })
            
